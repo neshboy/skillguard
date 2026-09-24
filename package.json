@@ -1,0 +1,47 @@
+{
+  "name": "skillguard",
+  "version": "0.1.0",
+  "description": "Offline-first, self-hostable static security auditor for third-party AI-agent skills/plugins. Think \"npm audit\" but for agent skills, run before you install/trust one.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "skillguard": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "security",
+    "audit",
+    "static-analysis",
+    "ai-agent",
+    "skills",
+    "supply-chain",
+    "cli"
+  ],
+  "dependencies": {
+    "@typescript-eslint/typescript-estree": "^7.18.0",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
+  }
+}

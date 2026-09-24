@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+skillguard-report.json
+.vitest-cache/
