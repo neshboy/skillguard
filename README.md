@@ -1,5 +1,9 @@
 # SkillGuard
 
+<img src="docs/assets/demo.svg" alt="skillguard auditing a real malicious skill fixture and flagging critical findings" width="700" />
+
+<sub>Real recorded terminal session against a real deliberately-malicious test fixture.</sub>
+
 **Offline, self-hostable static security auditor for third-party AI-agent
 "skills"/plugins.** Think `npm audit`, but for the installable extension
 packages used by agent tools (the kind of thing this very ecosystem — Claude
