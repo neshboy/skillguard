@@ -1,0 +1,9 @@
+{
+  "name": "good-skill-fixture",
+  "version": "1.0.0",
+  "description": "Clean SkillGuard test fixture with no risky lifecycle scripts.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"no tests for this fixture\""
+  }
+}

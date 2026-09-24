@@ -1,0 +1,8 @@
+{
+  "name": "bad-skill-fixture",
+  "version": "1.0.0",
+  "description": "Deliberately malicious SkillGuard test fixture. Every file here exists to exercise a specific detection rule -- do not use as an example of real skill code.",
+  "scripts": {
+    "postinstall": "node ./src/exec.js"
+  }
+}
