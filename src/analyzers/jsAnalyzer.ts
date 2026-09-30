@@ -39,6 +39,9 @@ const FS_WRITE_MEMBERS = new Set([
 
 const FS_MEMBERS = new Set([...FS_READ_MEMBERS, ...FS_WRITE_MEMBERS]);
 
+/** fs members whose second argument is also a path (a destination), which must be checked too. */
+const FS_TWO_PATH_MEMBERS = new Set(["rename", "renameSync"]);
+
 const HTTP_MODULES = new Set(["http", "https"]);
 const HTTP_REQUEST_MEMBERS = new Set(["request", "get"]);
 const AXIOS_MEMBERS = new Set([
@@ -205,6 +208,19 @@ function snippetForLine(lines: string[], line: number): string | undefined {
   return lines[line - 1].trim().slice(0, 200);
 }
 
+/**
+ * Determine whether a path string is absolute on POSIX or on Windows,
+ * regardless of which OS this analysis is actually running on. SkillGuard
+ * is commonly run in CI on Linux (see .github/workflows/ci.yml) to audit
+ * skills that may still contain Windows-style paths, so relying solely on
+ * the host's own default `path.isAbsolute` would silently miss e.g.
+ * `C:\Users\...` drive-letter paths or UNC paths when the analysis host is
+ * POSIX.
+ */
+function isAbsoluteOnAnyOs(value: string): boolean {
+  return path.win32.isAbsolute(value) || path.posix.isAbsolute(value);
+}
+
 function classifyPathArgument(
   argNode: AstNode | undefined,
 ): { kind: "static-safe" | "static-outside" | "dynamic"; value?: string } {
@@ -212,7 +228,7 @@ function classifyPathArgument(
   if (literal === undefined) {
     return { kind: "dynamic" };
   }
-  if (path.isAbsolute(literal)) {
+  if (isAbsoluteOnAnyOs(literal)) {
     return { kind: "static-outside", value: literal };
   }
   const normalized = path.normalize(literal);
@@ -256,15 +272,22 @@ export function analyzeJsFile(relPath: string, source: string): { findings: Find
   }
 
   const bindings = collectModuleBindings(ast);
+  // `bindings` never changes after this point, so resolve the axios alias
+  // (if any) once here rather than re-scanning the whole bindings map on
+  // every CallExpression node visited below.
+  const axiosAlias = [...bindings.aliasToModule.entries()].find(([, mod]) => mod === "axios")?.[0];
   let hasCredentialAccess = false;
   let hasNetworkAccess = false;
   let firstCredentialLine: number | undefined;
   let firstNetworkLine: number | undefined;
 
   walkAst(ast, (node) => {
-    // eval(...)
+    // All CallExpression checks (eval/fetch plus module-resolved calls below)
+    // share a single callee extraction rather than re-deriving it twice.
     if (node.type === "CallExpression") {
       const callee = (node as any).callee as AstNode;
+
+      // eval(...)
       if (callee?.type === "Identifier" && (callee as any).name === "eval") {
         const { line, column } = loc(node);
         findings.push({
@@ -299,31 +322,8 @@ export function analyzeJsFile(relPath: string, source: string): { findings: Find
           snippet: snippetForLine(lines, line),
         });
       }
-    }
 
-    // new Function(...)
-    if (node.type === "NewExpression") {
-      const callee = (node as any).callee as AstNode;
-      if (callee?.type === "Identifier" && (callee as any).name === "Function") {
-        const { line, column } = loc(node);
-        findings.push({
-          ruleId: "JS011",
-          category: "dynamic-code-execution",
-          severity: "critical",
-          file: relPath,
-          line,
-          column,
-          title: "Dynamic code execution via new Function()",
-          message:
-            "Constructs a function from a string at runtime with `new Function(...)`. Like eval(), this executes arbitrary code and is a common obfuscation/evasion technique.",
-          snippet: snippetForLine(lines, line),
-        });
-      }
-    }
-
-    // Resolved module member calls: child_process, fs, http/https, axios
-    if (node.type === "CallExpression") {
-      const callee = (node as any).callee as AstNode;
+      // Resolved module member calls: child_process, fs, http/https, axios
       if (!callee) return;
       const site = describeCallee(callee, bindings);
       const { line, column } = loc(node);
@@ -346,7 +346,21 @@ export function analyzeJsFile(relPath: string, source: string): { findings: Find
       if ((site.module === "fs" || site.module === "fs/promises" || site.module === "node:fs") && site.member && FS_MEMBERS.has(site.member)) {
         const pathArg = args[0];
         const classification = classifyPathArgument(pathArg);
-        if (classification.kind === "static-outside") {
+        // Some fs calls (e.g. rename/renameSync) take a second path argument
+        // -- the destination -- which must be checked too, since it can be
+        // used to move/overwrite a file outside the skill directory even
+        // when the source path is perfectly safe.
+        const destArg = FS_TWO_PATH_MEMBERS.has(site.member) ? args[1] : undefined;
+        const destClassification = destArg ? classifyPathArgument(destArg) : undefined;
+
+        const outside =
+          classification.kind === "static-outside"
+            ? classification
+            : destClassification?.kind === "static-outside"
+              ? destClassification
+              : undefined;
+
+        if (outside) {
           findings.push({
             ruleId: "JS020",
             category: "filesystem-access",
@@ -355,10 +369,10 @@ export function analyzeJsFile(relPath: string, source: string): { findings: Find
             line,
             column,
             title: `Filesystem access outside the skill directory (fs.${site.member})`,
-            message: `Calls fs.${site.member}("${classification.value}"), which resolves to an absolute path or uses ".." to escape the skill's own directory. Skills should only need to read/write within their own sandboxed folder; access elsewhere may be reading secrets or tampering with unrelated files.`,
+            message: `Calls fs.${site.member}("${outside.value}"), which resolves to an absolute path or uses ".." to escape the skill's own directory. Skills should only need to read/write within their own sandboxed folder; access elsewhere may be reading secrets or tampering with unrelated files.`,
             snippet: snippetForLine(lines, line),
           });
-        } else if (classification.kind === "dynamic") {
+        } else if (classification.kind === "dynamic" || destClassification?.kind === "dynamic") {
           findings.push({
             ruleId: "JS021",
             category: "filesystem-access",
@@ -402,7 +416,6 @@ export function analyzeJsFile(relPath: string, source: string): { findings: Find
       }
 
       // axios.get/post/... or axios(...) directly
-      const axiosAlias = [...bindings.aliasToModule.entries()].find(([, mod]) => mod === "axios")?.[0];
       if (axiosAlias) {
         if (callee.type === "Identifier" && (callee as any).name === axiosAlias) {
           hasNetworkAccess = true;
@@ -440,6 +453,26 @@ export function analyzeJsFile(relPath: string, source: string): { findings: Find
             snippet: snippetForLine(lines, line),
           });
         }
+      }
+    }
+
+    // new Function(...)
+    if (node.type === "NewExpression") {
+      const callee = (node as any).callee as AstNode;
+      if (callee?.type === "Identifier" && (callee as any).name === "Function") {
+        const { line, column } = loc(node);
+        findings.push({
+          ruleId: "JS011",
+          category: "dynamic-code-execution",
+          severity: "critical",
+          file: relPath,
+          line,
+          column,
+          title: "Dynamic code execution via new Function()",
+          message:
+            "Constructs a function from a string at runtime with `new Function(...)`. Like eval(), this executes arbitrary code and is a common obfuscation/evasion technique.",
+          snippet: snippetForLine(lines, line),
+        });
       }
     }
 
